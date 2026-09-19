@@ -1,13 +1,17 @@
 import os
 import re
+import time
 import feedparser
 from google import genai
+import requests
 
 RSS_URL = "https://www.forexlive.com/feed/"
 SEEN_FILE = "seen_ids.txt"
 
-# خواندن کلید جمینای از گیت‌هاب
+# خواندن کلیدها از GitHub Secrets
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # =========================
 # Keywords
@@ -32,7 +36,7 @@ CRYPTO_KEYWORDS = ["bitcoin", "btc", "ethereum", "eth", "crypto", "binance", "so
 STOCK_ONLY_KEYWORDS = ["nasdaq", "dow jones", "s&p 500", "s&p500", "stocks", "equities"]
 
 # =========================
-# Helper Functions
+# File Handlers
 # =========================
 
 def load_seen_ids():
@@ -44,6 +48,10 @@ def load_seen_ids():
 def save_seen_id(news_id):
     with open(SEEN_FILE, "a", encoding="utf-8") as f:
         f.write(f"{news_id}\n")
+
+# =========================
+# Helpers & Classifier
+# =========================
 
 def keyword_exists(text, keyword):
     text = text.lower()
@@ -76,7 +84,7 @@ def classify_news(title):
     return " + ".join(categories) if categories else None
 
 # =========================
-# Step 6: Gemini Persian Translator
+# Gemini AI
 # =========================
 
 def generate_persian_post(title, summary, category):
@@ -107,15 +115,29 @@ def generate_persian_post(title, summary, category):
     return response.text
 
 # =========================
-# Main Flow
+# Telegram Sender
+# =========================
+
+def send_to_telegram(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    res = requests.post(url, json=payload, timeout=10)
+    return res.status_code == 200
+
+# =========================
+# Main Execution
 # =========================
 
 def main():
     seen_ids = load_seen_ids()
     feed = feedparser.parse(RSS_URL)
-    print(f"Total RSS items: {len(feed.entries)}")
+    print(f"Total items found: {len(feed.entries)}")
 
-    # بررسی خبرها
     for item in reversed(feed.entries):
         news_id = item.get("id") or item.get("link")
         title = item.get("title", "")
@@ -130,19 +152,20 @@ def main():
             save_seen_id(news_id)
             continue
 
-        print(f"Translating: {title}")
+        print(f"Processing: {title}")
         try:
             persian_text = generate_persian_post(title, summary, category)
-            print("\n--- متن تولید شده توسط هوش مصنوعی ---")
-            print(persian_text)
-            print("---------------------------------------\n")
+            success = send_to_telegram(persian_text)
             
-            # در مرحله بعد این بخش به تلگرام وصل می‌شود
-            seen_ids.add(news_id)
-            save_seen_id(news_id)
-            break # فعلاً فقط یک خبر را برای تست پردازش می‌کنیم
+            if success:
+                print("Sent to Telegram successfully!")
+                seen_ids.add(news_id)
+                save_seen_id(news_id)
+                time.sleep(3)  # وقفه کوتاه بین پیام‌ها
+            else:
+                print("Failed to send message to Telegram.")
         except Exception as e:
-            print(f"Error calling Gemini: {e}")
+            print(f"Error occurred: {e}")
 
 if __name__ == "__main__":
     main()
