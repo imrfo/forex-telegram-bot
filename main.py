@@ -72,6 +72,12 @@ FOREX_KEYWORDS = [
     "cad",
     "aud",
     "nzd",
+    "yen",
+    "dollar/yen",
+    "euro/dollar",
+    "pound/dollar",
+
+    # Standard Forex pairs
     "eur/usd",
     "gbp/usd",
     "usd/jpy",
@@ -82,6 +88,18 @@ FOREX_KEYWORDS = [
     "eur/gbp",
     "eur/jpy",
     "gbp/jpy",
+
+    # Compact pair names often used in headlines
+    "eurusd",
+    "gbpusd",
+    "usdjpy",
+    "usdchf",
+    "usdcad",
+    "audusd",
+    "nzdusd",
+    "eurjpy",
+    "gbpjpy",
+
     "currency pair",
 ]
 
@@ -150,9 +168,13 @@ def keyword_exists(text, keyword):
     text = text.lower()
     keyword = keyword.lower()
 
-    # For very short keywords, require word boundaries.
+    # Short keywords must be complete words.
     if len(keyword) <= 4:
-        pattern = r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])"
+        pattern = (
+            r"(?<![a-z0-9])"
+            + re.escape(keyword)
+            + r"(?![a-z0-9])"
+        )
         return re.search(pattern, text) is not None
 
     return keyword in text
@@ -173,80 +195,97 @@ def find_matches(text, keywords):
 # =========================
 
 def classify_news(title, summary):
-    """
-    Main classification is based on the TITLE.
-    Summary is intentionally not used for classification
-    to avoid false matches from RSS boilerplate.
-    """
+
+    # IMPORTANT:
+    # Classification is based mainly on the TITLE.
+    # We intentionally do NOT use the RSS summary here.
 
     title_text = title.lower()
 
-    macro_matches = find_matches(title_text, MACRO_KEYWORDS)
-    forex_matches = find_matches(title_text, FOREX_KEYWORDS)
-    commodity_matches = find_matches(title_text, COMMODITY_KEYWORDS)
-    crypto_matches = find_matches(title_text, CRYPTO_KEYWORDS)
-    stock_matches = find_matches(title_text, STOCK_ONLY_KEYWORDS)
+    macro_matches = find_matches(
+        title_text,
+        MACRO_KEYWORDS
+    )
 
-    categories = []
+    forex_matches = find_matches(
+        title_text,
+        FOREX_KEYWORDS
+    )
 
-    # -------------------------
-    # Crypto
-    # -------------------------
+    commodity_matches = find_matches(
+        title_text,
+        COMMODITY_KEYWORDS
+    )
 
-    if crypto_matches:
-        categories.append("CRYPTO")
+    crypto_matches = find_matches(
+        title_text,
+        CRYPTO_KEYWORDS
+    )
 
-    # -------------------------
-    # Gold / Oil
-    # -------------------------
+    stock_matches = find_matches(
+        title_text,
+        STOCK_ONLY_KEYWORDS
+    )
 
-    if commodity_matches:
-        categories.append("GOLD/OIL")
 
-    # -------------------------
-    # Forex
-    # -------------------------
+    # =========================
+    # Stock-only exclusion
+    # =========================
 
-    if forex_matches:
-        categories.append("FOREX")
-
-    # -------------------------
-    # Macro
-    # -------------------------
-
-    if macro_matches:
-        categories.append("MACRO")
-
-    # -------------------------
-    # Ignore stock-only news
-    # -------------------------
+    # If the title is clearly about stocks/equities
+    # and does NOT explicitly mention Forex, Crypto,
+    # Gold/Oil, then ignore it.
 
     if stock_matches and not (
         crypto_matches
         or commodity_matches
         or forex_matches
-        or macro_matches
     ):
-        return None, [], [], [], [], stock_matches
+        return None, [], [], [], [], []
 
-    # -------------------------
+
+    categories = []
+
+
+    # =========================
+    # Crypto
+    # =========================
+
+    if crypto_matches:
+        categories.append("CRYPTO")
+
+
+    # =========================
+    # Gold / Oil
+    # =========================
+
+    if commodity_matches:
+        categories.append("GOLD/OIL")
+
+
+    # =========================
+    # Forex
+    # =========================
+
+    if forex_matches:
+        categories.append("FOREX")
+
+
+    # =========================
+    # Macro
+    # =========================
+
+    if macro_matches:
+        categories.append("MACRO")
+
+
+    # =========================
     # No relevant category
-    # -------------------------
+    # =========================
 
     if not categories:
-        return None, [], [], [], [], stock_matches
+        return None, [], [], [], [], []
 
-    # -------------------------
-    # Priority
-    # -------------------------
-
-    if (
-        len(categories) >= 2
-        or macro_matches
-    ):
-        priority = "HIGH"
-    else:
-        priority = "MEDIUM"
 
     return (
         " + ".join(categories),
@@ -267,6 +306,7 @@ feed = feedparser.parse(RSS_URL)
 print("===================================")
 print("Forex + Crypto News Filter Test")
 print("===================================")
+
 print(f"Total RSS items: {len(feed.entries)}")
 print()
 
@@ -299,19 +339,31 @@ for index, item in enumerate(feed.entries, start=1):
 
     relevant_count += 1
 
+
+    # =========================
     # Priority
+    # =========================
+
     if "MACRO" in categories:
         priority = "HIGH"
+
     elif len(categories) >= 2:
         priority = "HIGH"
+
     else:
         priority = "MEDIUM"
+
+
+    # =========================
+    # Print result
+    # =========================
 
     print("-----------------------------------")
     print(f"#{relevant_count}")
     print(f"Title: {title}")
     print(f"Category: {category}")
     print(f"Priority: {priority}")
+
 
     all_matches = (
         macro_matches
@@ -322,7 +374,9 @@ for index, item in enumerate(feed.entries, start=1):
 
     print(
         "Matched keywords:",
-        ", ".join(all_matches) if all_matches else "None"
+        ", ".join(all_matches)
+        if all_matches
+        else "None"
     )
 
     print(f"Date: {published}")
@@ -332,5 +386,8 @@ for index, item in enumerate(feed.entries, start=1):
 
 print("===================================")
 print("Filter Test Finished")
-print(f"Relevant news: {relevant_count} / {len(feed.entries)}")
+print(
+    f"Relevant news: "
+    f"{relevant_count} / {len(feed.entries)}"
+)
 print("===================================")
