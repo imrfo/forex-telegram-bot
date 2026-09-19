@@ -109,7 +109,7 @@ def generate_persian_post(title, summary, category):
 #فارکس #{category.replace(' + ', ' #').replace('/', '_')}
 """
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.6-flash",
         contents=prompt
     )
     return response.text
