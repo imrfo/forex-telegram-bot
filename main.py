@@ -1,49 +1,69 @@
 import feedparser
-
+import re
 
 RSS_URL = "https://www.forexlive.com/feed/"
 
 
-# ==============================
-# 1. اقتصاد کلان و بانک‌های مرکزی
-# ==============================
+# =========================
+# Keywords
+# =========================
 
 MACRO_KEYWORDS = [
-    "federal reserve",
     "fed",
+    "federal reserve",
+    "fomc",
     "ecb",
     "european central bank",
     "boe",
     "bank of england",
     "boj",
     "bank of japan",
+    "central bank",
     "interest rate",
-    "interest rates",
     "rate decision",
     "rate cut",
     "rate hike",
+    "rate check",
+    "rate expectations",
+    "inflation",
     "cpi",
+    "core cpi",
     "pce",
+    "core pce",
     "nfp",
     "nonfarm payroll",
+    "payrolls",
     "employment",
     "unemployment",
+    "jobless claims",
+    "initial claims",
+    "jobs report",
     "gdp",
     "pmi",
-    "inflation",
-    "central bank",
-    "monetary policy",
+    "manufacturing",
+    "services pmi",
+    "retail sales",
+    "industrial production",
+    "consumer confidence",
+    "consumer sentiment",
+    "ppi",
+    "jolts",
+    "adp",
+    "wages",
+    "average hourly earnings",
+    "durable goods",
+    "housing starts",
+    "building permits",
+    "trade balance",
+    "current account",
+    "capacity utilization",
+    "intervention",
 ]
 
-
-# ==============================
-# 2. فارکس و ارزها
-# ==============================
 
 FOREX_KEYWORDS = [
     "forex",
     "fx",
-    "currency",
     "usd",
     "eur",
     "gbp",
@@ -53,18 +73,18 @@ FOREX_KEYWORDS = [
     "aud",
     "nzd",
     "eur/usd",
-    "usd/jpy",
     "gbp/usd",
+    "usd/jpy",
     "usd/chf",
     "usd/cad",
     "aud/usd",
     "nzd/usd",
+    "eur/gbp",
+    "eur/jpy",
+    "gbp/jpy",
+    "currency pair",
 ]
 
-
-# ==============================
-# 3. طلا و نفت
-# ==============================
 
 COMMODITY_KEYWORDS = [
     "gold",
@@ -76,10 +96,6 @@ COMMODITY_KEYWORDS = [
     "wti",
 ]
 
-
-# ==============================
-# 4. کریپتو
-# ==============================
 
 CRYPTO_KEYWORDS = [
     "bitcoin",
@@ -94,8 +110,7 @@ CRYPTO_KEYWORDS = [
     "ada",
     "dogecoin",
     "doge",
-    "binance",
-    "coinbase",
+    "zcash",
     "crypto",
     "cryptocurrency",
     "blockchain",
@@ -103,22 +118,18 @@ CRYPTO_KEYWORDS = [
     "defi",
     "altcoin",
     "token",
-    "zcash",
+    "binance",
+    "coinbase",
     "usdt",
     "usdc",
 ]
 
 
-# ==============================
-# 5. موضوعاتی که معمولاً
-#    برای کانال ما اولویت ندارند
-# ==============================
-
-EXCLUDE_KEYWORDS = [
+STOCK_ONLY_KEYWORDS = [
     "nasdaq",
     "dow jones",
     "s&p 500",
-    "sp500",
+    "s&p500",
     "stock market",
     "stocks",
     "equities",
@@ -126,151 +137,147 @@ EXCLUDE_KEYWORDS = [
 ]
 
 
-def find_matches(text, keywords):
+# =========================
+# Helper
+# =========================
+
+def keyword_exists(text, keyword):
     """
-    تمام کلمات پیدا شده در متن را برمی‌گرداند.
+    Checks whether a keyword exists as a real word/phrase.
+    This prevents things like 'eth' matching inside 'technical'.
     """
 
     text = text.lower()
+    keyword = keyword.lower()
 
+    # For very short keywords, require word boundaries.
+    if len(keyword) <= 4:
+        pattern = r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])"
+        return re.search(pattern, text) is not None
+
+    return keyword in text
+
+
+def find_matches(text, keywords):
     matches = []
 
     for keyword in keywords:
-        if keyword.lower() in text:
+        if keyword_exists(text, keyword):
             matches.append(keyword)
 
     return matches
 
 
+# =========================
+# Classification
+# =========================
+
 def classify_news(title, summary):
     """
-    خبر را در یکی از دسته‌های اصلی قرار می‌دهد.
+    Main classification is based on the TITLE.
+    Summary is intentionally not used for classification
+    to avoid false matches from RSS boilerplate.
     """
 
-    text = f"{title} {summary}".lower()
+    title_text = title.lower()
 
-    macro_matches = find_matches(text, MACRO_KEYWORDS)
-    forex_matches = find_matches(text, FOREX_KEYWORDS)
-    commodity_matches = find_matches(text, COMMODITY_KEYWORDS)
-    crypto_matches = find_matches(text, CRYPTO_KEYWORDS)
-    exclude_matches = find_matches(text, EXCLUDE_KEYWORDS)
-
-    # ------------------------------
-    # تشخیص دسته اصلی
-    # ------------------------------
+    macro_matches = find_matches(title_text, MACRO_KEYWORDS)
+    forex_matches = find_matches(title_text, FOREX_KEYWORDS)
+    commodity_matches = find_matches(title_text, COMMODITY_KEYWORDS)
+    crypto_matches = find_matches(title_text, CRYPTO_KEYWORDS)
+    stock_matches = find_matches(title_text, STOCK_ONLY_KEYWORDS)
 
     categories = []
 
-    if macro_matches:
-        categories.append("MACRO")
-
-    if forex_matches:
-        categories.append("FOREX")
-
-    if commodity_matches:
-        categories.append("GOLD/OIL")
+    # -------------------------
+    # Crypto
+    # -------------------------
 
     if crypto_matches:
         categories.append("CRYPTO")
 
-    # ------------------------------
-    # اگر هیچ موضوع مرتبطی نبود
-    # ------------------------------
+    # -------------------------
+    # Gold / Oil
+    # -------------------------
 
-    if not categories:
-        return None, [], [], [], [], exclude_matches
+    if commodity_matches:
+        categories.append("GOLD/OIL")
 
-    # ------------------------------
-    # اگر خبر کریپتو است و موضوع
-    # دیگری ندارد، آن را Crypto بدان
-    # ------------------------------
+    # -------------------------
+    # Forex
+    # -------------------------
 
-    if crypto_matches and not macro_matches and not forex_matches:
-        category = "CRYPTO"
+    if forex_matches:
+        categories.append("FOREX")
 
-    # ------------------------------
-    # اگر خبر طلا/نفت است
-    # ------------------------------
-
-    elif commodity_matches and not macro_matches and not forex_matches:
-        category = "GOLD/OIL"
-
-    # ------------------------------
-    # اگر خبر فارکس یا اقتصاد کلان است
-    # ------------------------------
-
-    elif macro_matches and forex_matches:
-        category = "MACRO + FOREX"
-
-    elif macro_matches:
-        category = "MACRO"
-
-    elif forex_matches:
-        category = "FOREX"
-
-    else:
-        category = "OTHER"
-
-    # ------------------------------
-    # تعیین اولویت اولیه
-    # ------------------------------
+    # -------------------------
+    # Macro
+    # -------------------------
 
     if macro_matches:
-        priority = "HIGH"
+        categories.append("MACRO")
 
-    elif forex_matches or commodity_matches:
-        priority = "MEDIUM"
+    # -------------------------
+    # Ignore stock-only news
+    # -------------------------
 
-    elif crypto_matches:
-        priority = "MEDIUM"
-
-    else:
-        priority = "LOW"
-
-    # ------------------------------
-    # اگر خبر صرفاً درباره سهام بود
-    # ولی هیچ موضوع اصلی نداشت،
-    # آن را حذف کن
-    # ------------------------------
-
-    if exclude_matches and not (
-        macro_matches
-        or forex_matches
+    if stock_matches and not (
+        crypto_matches
         or commodity_matches
-        or crypto_matches
+        or forex_matches
+        or macro_matches
     ):
-        return None, [], [], [], [], exclude_matches
+        return None, [], [], [], [], stock_matches
+
+    # -------------------------
+    # No relevant category
+    # -------------------------
+
+    if not categories:
+        return None, [], [], [], [], stock_matches
+
+    # -------------------------
+    # Priority
+    # -------------------------
+
+    if (
+        len(categories) >= 2
+        or macro_matches
+    ):
+        priority = "HIGH"
+    else:
+        priority = "MEDIUM"
 
     return (
-        category,
+        " + ".join(categories),
+        categories,
         macro_matches,
         forex_matches,
         commodity_matches,
         crypto_matches,
-        exclude_matches,
-        priority,
     )
 
 
-# ==============================
-# دریافت RSS
-# ==============================
+# =========================
+# Read RSS
+# =========================
 
 feed = feedparser.parse(RSS_URL)
-
 
 print("===================================")
 print("Forex + Crypto News Filter Test")
 print("===================================")
-
 print(f"Total RSS items: {len(feed.entries)}")
 print()
-
 
 relevant_count = 0
 
 
-for item in feed.entries:
+# =========================
+# Process news
+# =========================
+
+for index, item in enumerate(feed.entries, start=1):
 
     title = item.get("title", "No title")
     link = item.get("link", "No link")
@@ -279,52 +286,51 @@ for item in feed.entries:
 
     result = classify_news(title, summary)
 
-    if result is None:
-        continue
+    category = result[0]
+    categories = result[1]
+    macro_matches = result[2]
+    forex_matches = result[3]
+    commodity_matches = result[4]
+    crypto_matches = result[5]
 
-    (
-        category,
-        macro_matches,
-        forex_matches,
-        commodity_matches,
-        crypto_matches,
-        exclude_matches,
-        priority,
-    ) = result
+    # Ignore irrelevant news
+    if category is None:
+        continue
 
     relevant_count += 1
 
+    # Priority
+    if "MACRO" in categories:
+        priority = "HIGH"
+    elif len(categories) >= 2:
+        priority = "HIGH"
+    else:
+        priority = "MEDIUM"
+
     print("-----------------------------------")
-    print(f"News #{relevant_count}")
-    print(f"Priority: {priority}")
-    print(f"Category: {category}")
+    print(f"#{relevant_count}")
     print(f"Title: {title}")
+    print(f"Category: {category}")
+    print(f"Priority: {priority}")
+
+    all_matches = (
+        macro_matches
+        + forex_matches
+        + commodity_matches
+        + crypto_matches
+    )
+
+    print(
+        "Matched keywords:",
+        ", ".join(all_matches) if all_matches else "None"
+    )
+
     print(f"Date: {published}")
     print(f"Link: {link}")
-
-    if macro_matches:
-        print(
-            f"Macro keywords: {', '.join(macro_matches)}"
-        )
-
-    if forex_matches:
-        print(
-            f"Forex keywords: {', '.join(forex_matches)}"
-        )
-
-    if commodity_matches:
-        print(
-            f"Gold/Oil keywords: {', '.join(commodity_matches)}"
-        )
-
-    if crypto_matches:
-        print(
-            f"Crypto keywords: {', '.join(crypto_matches)}"
-        )
-
     print()
 
 
 print("===================================")
-print(f"Relevant news: {relevant_count}")
+print("Filter Test Finished")
+print(f"Relevant news: {relevant_count} / {len(feed.entries)}")
 print("===================================")
