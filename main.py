@@ -1,393 +1,148 @@
-import feedparser
+import os
 import re
+import feedparser
+from google import genai
 
 RSS_URL = "https://www.forexlive.com/feed/"
+SEEN_FILE = "seen_ids.txt"
 
+# خواندن کلید جمینای از گیت‌هاب
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # =========================
 # Keywords
 # =========================
 
 MACRO_KEYWORDS = [
-    "fed",
-    "federal reserve",
-    "fomc",
-    "ecb",
-    "european central bank",
-    "boe",
-    "bank of england",
-    "boj",
-    "bank of japan",
-    "central bank",
-    "interest rate",
-    "rate decision",
-    "rate cut",
-    "rate hike",
-    "rate check",
-    "rate expectations",
-    "inflation",
-    "cpi",
-    "core cpi",
-    "pce",
-    "core pce",
-    "nfp",
-    "nonfarm payroll",
-    "payrolls",
-    "employment",
-    "unemployment",
-    "jobless claims",
-    "initial claims",
-    "jobs report",
-    "gdp",
-    "pmi",
-    "manufacturing",
-    "services pmi",
-    "retail sales",
-    "industrial production",
-    "consumer confidence",
-    "consumer sentiment",
-    "ppi",
-    "jolts",
-    "adp",
-    "wages",
-    "average hourly earnings",
-    "durable goods",
-    "housing starts",
-    "building permits",
-    "trade balance",
-    "current account",
-    "capacity utilization",
-    "intervention",
+    "fed", "federal reserve", "fomc", "ecb", "european central bank",
+    "boe", "bank of england", "boj", "bank of japan", "central bank",
+    "interest rate", "rate decision", "rate cut", "rate hike",
+    "inflation", "cpi", "core cpi", "pce", "nfp", "nonfarm payroll",
+    "payrolls", "employment", "unemployment", "jobless claims",
+    "jobs report", "gdp", "pmi", "retail sales", "ppi"
 ]
-
 
 FOREX_KEYWORDS = [
-    "forex",
-    "fx",
-    "usd",
-    "eur",
-    "gbp",
-    "jpy",
-    "chf",
-    "cad",
-    "aud",
-    "nzd",
-    "yen",
-    "dollar/yen",
-    "euro/dollar",
-    "pound/dollar",
-
-    # Standard Forex pairs
-    "eur/usd",
-    "gbp/usd",
-    "usd/jpy",
-    "usd/chf",
-    "usd/cad",
-    "aud/usd",
-    "nzd/usd",
-    "eur/gbp",
-    "eur/jpy",
-    "gbp/jpy",
-
-    # Compact pair names often used in headlines
-    "eurusd",
-    "gbpusd",
-    "usdjpy",
-    "usdchf",
-    "usdcad",
-    "audusd",
-    "nzdusd",
-    "eurjpy",
-    "gbpjpy",
-
-    "currency pair",
+    "forex", "fx", "usd", "eur", "gbp", "jpy", "chf", "cad", "aud", "nzd",
+    "eur/usd", "gbp/usd", "usd/jpy", "usd/chf", "aud/usd", "eurusd", "gbpusd", "usdjpy"
 ]
 
-
-COMMODITY_KEYWORDS = [
-    "gold",
-    "xau",
-    "xau/usd",
-    "oil",
-    "crude",
-    "brent",
-    "wti",
-]
-
-
-CRYPTO_KEYWORDS = [
-    "bitcoin",
-    "btc",
-    "ethereum",
-    "eth",
-    "solana",
-    "sol",
-    "xrp",
-    "ripple",
-    "cardano",
-    "ada",
-    "dogecoin",
-    "doge",
-    "zcash",
-    "crypto",
-    "cryptocurrency",
-    "blockchain",
-    "stablecoin",
-    "defi",
-    "altcoin",
-    "token",
-    "binance",
-    "coinbase",
-    "usdt",
-    "usdc",
-]
-
-
-STOCK_ONLY_KEYWORDS = [
-    "nasdaq",
-    "dow jones",
-    "s&p 500",
-    "s&p500",
-    "stock market",
-    "stocks",
-    "equities",
-    "shares",
-]
-
+COMMODITY_KEYWORDS = ["gold", "xau", "xau/usd", "oil", "crude", "brent", "wti"]
+CRYPTO_KEYWORDS = ["bitcoin", "btc", "ethereum", "eth", "crypto", "binance", "solana"]
+STOCK_ONLY_KEYWORDS = ["nasdaq", "dow jones", "s&p 500", "s&p500", "stocks", "equities"]
 
 # =========================
-# Helper
+# Helper Functions
 # =========================
+
+def load_seen_ids():
+    if not os.path.exists(SEEN_FILE):
+        return set()
+    with open(SEEN_FILE, "r", encoding="utf-8") as f:
+        return set(line.strip() for line in f if line.strip())
+
+def save_seen_id(news_id):
+    with open(SEEN_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{news_id}\n")
 
 def keyword_exists(text, keyword):
-    """
-    Checks whether a keyword exists as a real word/phrase.
-    This prevents things like 'eth' matching inside 'technical'.
-    """
-
     text = text.lower()
     keyword = keyword.lower()
-
-    # Short keywords must be complete words.
     if len(keyword) <= 4:
-        pattern = (
-            r"(?<![a-z0-9])"
-            + re.escape(keyword)
-            + r"(?![a-z0-9])"
-        )
+        pattern = r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])"
         return re.search(pattern, text) is not None
-
     return keyword in text
 
-
 def find_matches(text, keywords):
-    matches = []
+    return [kw for kw in keywords if keyword_exists(text, kw)]
 
-    for keyword in keywords:
-        if keyword_exists(text, keyword):
-            matches.append(keyword)
-
-    return matches
-
-
-# =========================
-# Classification
-# =========================
-
-def classify_news(title, summary):
-
-    # IMPORTANT:
-    # Classification is based mainly on the TITLE.
-    # We intentionally do NOT use the RSS summary here.
-
+def classify_news(title):
     title_text = title.lower()
+    macro_matches = find_matches(title_text, MACRO_KEYWORDS)
+    forex_matches = find_matches(title_text, FOREX_KEYWORDS)
+    commodity_matches = find_matches(title_text, COMMODITY_KEYWORDS)
+    crypto_matches = find_matches(title_text, CRYPTO_KEYWORDS)
+    stock_matches = find_matches(title_text, STOCK_ONLY_KEYWORDS)
 
-    macro_matches = find_matches(
-        title_text,
-        MACRO_KEYWORDS
-    )
-
-    forex_matches = find_matches(
-        title_text,
-        FOREX_KEYWORDS
-    )
-
-    commodity_matches = find_matches(
-        title_text,
-        COMMODITY_KEYWORDS
-    )
-
-    crypto_matches = find_matches(
-        title_text,
-        CRYPTO_KEYWORDS
-    )
-
-    stock_matches = find_matches(
-        title_text,
-        STOCK_ONLY_KEYWORDS
-    )
-
-
-    # =========================
-    # Stock-only exclusion
-    # =========================
-
-    # If the title is clearly about stocks/equities
-    # and does NOT explicitly mention Forex, Crypto,
-    # Gold/Oil, then ignore it.
-
-    if stock_matches and not (
-        crypto_matches
-        or commodity_matches
-        or forex_matches
-    ):
-        return None, [], [], [], [], []
-
+    if stock_matches and not (crypto_matches or commodity_matches or forex_matches):
+        return None
 
     categories = []
+    if crypto_matches: categories.append("CRYPTO")
+    if commodity_matches: categories.append("GOLD/OIL")
+    if forex_matches: categories.append("FOREX")
+    if macro_matches: categories.append("MACRO")
 
+    return " + ".join(categories) if categories else None
 
-    # =========================
-    # Crypto
-    # =========================
+# =========================
+# Step 6: Gemini Persian Translator
+# =========================
 
-    if crypto_matches:
-        categories.append("CRYPTO")
+def generate_persian_post(title, summary, category):
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = f"""
+تو یک تحلیل‌گر و گزارشگر حرفه‌ای بازار فارکس هستی.
+این خبر انگلیسی را به یک پست تلگرامی فارسی کوتاه، روان و شکیل تبدیل کن:
 
+تیتر: {title}
+خلاصه: {summary}
+دسته‌بندی: {category}
 
-    # =========================
-    # Gold / Oil
-    # =========================
+قالب خروجی دقیقاً به این شکل باشد:
+🔴 **[تیتر فوری و جذاب فارسی]**
 
-    if commodity_matches:
-        categories.append("GOLD/OIL")
+📌 **خلاصه خبر:**
+[۲ تا ۳ جمله روان و کامل درباره اصل ماجرا]
 
+💡 **اثر روی بازار:**
+[یک خط درباره ارزها یا دارایی‌های تحت تاثیر]
 
-    # =========================
-    # Forex
-    # =========================
-
-    if forex_matches:
-        categories.append("FOREX")
-
-
-    # =========================
-    # Macro
-    # =========================
-
-    if macro_matches:
-        categories.append("MACRO")
-
-
-    # =========================
-    # No relevant category
-    # =========================
-
-    if not categories:
-        return None, [], [], [], [], []
-
-
-    return (
-        " + ".join(categories),
-        categories,
-        macro_matches,
-        forex_matches,
-        commodity_matches,
-        crypto_matches,
+#فارکس #{category.replace(' + ', ' #').replace('/', '_')}
+"""
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
     )
-
-
-# =========================
-# Read RSS
-# =========================
-
-feed = feedparser.parse(RSS_URL)
-
-print("===================================")
-print("Forex + Crypto News Filter Test")
-print("===================================")
-
-print(f"Total RSS items: {len(feed.entries)}")
-print()
-
-relevant_count = 0
-
+    return response.text
 
 # =========================
-# Process news
+# Main Flow
 # =========================
 
-for index, item in enumerate(feed.entries, start=1):
+def main():
+    seen_ids = load_seen_ids()
+    feed = feedparser.parse(RSS_URL)
+    print(f"Total RSS items: {len(feed.entries)}")
 
-    title = item.get("title", "No title")
-    link = item.get("link", "No link")
-    published = item.get("published", "No date")
-    summary = item.get("summary", "")
+    # بررسی خبرها
+    for item in reversed(feed.entries):
+        news_id = item.get("id") or item.get("link")
+        title = item.get("title", "")
+        summary = item.get("summary", "")
 
-    result = classify_news(title, summary)
+        if news_id in seen_ids:
+            continue
 
-    category = result[0]
-    categories = result[1]
-    macro_matches = result[2]
-    forex_matches = result[3]
-    commodity_matches = result[4]
-    crypto_matches = result[5]
+        category = classify_news(title)
+        if not category:
+            seen_ids.add(news_id)
+            save_seen_id(news_id)
+            continue
 
-    # Ignore irrelevant news
-    if category is None:
-        continue
+        print(f"Translating: {title}")
+        try:
+            persian_text = generate_persian_post(title, summary, category)
+            print("\n--- متن تولید شده توسط هوش مصنوعی ---")
+            print(persian_text)
+            print("---------------------------------------\n")
+            
+            # در مرحله بعد این بخش به تلگرام وصل می‌شود
+            seen_ids.add(news_id)
+            save_seen_id(news_id)
+            break # فعلاً فقط یک خبر را برای تست پردازش می‌کنیم
+        except Exception as e:
+            print(f"Error calling Gemini: {e}")
 
-    relevant_count += 1
-
-
-    # =========================
-    # Priority
-    # =========================
-
-    if "MACRO" in categories:
-        priority = "HIGH"
-
-    elif len(categories) >= 2:
-        priority = "HIGH"
-
-    else:
-        priority = "MEDIUM"
-
-
-    # =========================
-    # Print result
-    # =========================
-
-    print("-----------------------------------")
-    print(f"#{relevant_count}")
-    print(f"Title: {title}")
-    print(f"Category: {category}")
-    print(f"Priority: {priority}")
-
-
-    all_matches = (
-        macro_matches
-        + forex_matches
-        + commodity_matches
-        + crypto_matches
-    )
-
-    print(
-        "Matched keywords:",
-        ", ".join(all_matches)
-        if all_matches
-        else "None"
-    )
-
-    print(f"Date: {published}")
-    print(f"Link: {link}")
-    print()
-
-
-print("===================================")
-print("Filter Test Finished")
-print(
-    f"Relevant news: "
-    f"{relevant_count} / {len(feed.entries)}"
-)
-print("===================================")
+if __name__ == "__main__":
+    main()
