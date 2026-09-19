@@ -8,9 +8,10 @@ import requests
 RSS_URL = "https://www.forexlive.com/feed/"
 SEEN_FILE = "seen_ids.txt"
 
+# خواندن تنظیمات از GitHub Secrets
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "@ForexPersianNews")
 
 MACRO_KEYWORDS = [
     "fed", "federal reserve", "fomc", "ecb", "european central bank",
@@ -70,17 +71,42 @@ def classify_news(title):
 
     return " + ".join(categories) if categories else None
 
+def extract_image_url(item):
+    """استخراج تصویر خبر از متادیتا یا تگ‌های داخل خلاصه فید"""
+    # 1. بررسی media_content
+    if "media_content" in item and len(item.media_content) > 0:
+        url = item.media_content[0].get("url")
+        if url:
+            return url
+
+    # 2. بررسی enclosures
+    if "enclosures" in item and len(item.enclosures) > 0:
+        url = item.enclosures[0].get("href")
+        if url:
+            return url
+
+    # 3. جستجوی تگ img در summary یا content
+    content = item.get("summary", "")
+    if "content" in item and len(item.content) > 0:
+        content += " " + item.content[0].get("value", "")
+
+    img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', content, re.IGNORECASE)
+    if img_match:
+        return img_match.group(1)
+
+    return None
+
 def generate_persian_post(title, summary, category):
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
 تو یک تحلیل‌گر بازار فارکس هستی. برای این خبر یک پست تلگرامی فارسی بساز.
-از به کار بردن تگ‌های HTML غیراستاندارد خودداری کن. تنها از تگ <b> برای بولد کردن استفاده کن.
+تنها از تگ <b> برای بولد کردن استفاده کن و تگ HTML دیگری نگذار.
 
 تیتر: {title}
 خلاصه: {summary}
 دسته‌بندی: {category}
 
-قالب خروجی دقیقاً به این فرمت باشد:
+قالب دقیق خروجی:
 🔴 <b>[تیتر فوری و جذاب فارسی]</b>
 
 📌 <b>خلاصه خبر:</b>
@@ -92,18 +118,38 @@ def generate_persian_post(title, summary, category):
 #{category.replace(' + ', ' #').replace('/', '_')} #فارکس
 """
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model="gemini-3.1-flash-lite",
         contents=prompt
     )
-    return response.text
+    
+    # اضافه کردن امضای کانال به انتهای پیام
+    post_text = response.text.strip()
+    post_text += "\n\n🆔 @ForexPersianNews"
+    return post_text
 
-def send_to_telegram(text):
+def send_to_telegram(text, image_url=None):
+    # حداکثر طول مجاز کپشن تلگرام ۱۰۲۴ کاراکتر است
+    if image_url:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "photo": image_url,
+            "caption": text[:1024],
+            "parse_mode": "HTML"
+        }
+        res = requests.post(url, json=payload, timeout=15)
+        # اگر ارسال عکس شکست خورد، همان پست به صورت متنی ارسال شود
+        if res.status_code == 200:
+            return True
+        print(f"Failed to send image, trying as text... Error: {res.text}")
+
+    # ارسال متنی معمولی
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True
+        "disable_web_page_preview": False
     }
     res = requests.post(url, json=payload, timeout=10)
     if res.status_code != 200:
@@ -117,7 +163,7 @@ def main():
     print(f"Total items in feed: {len(feed.entries)}")
 
     processed_count = 0
-    MAX_PER_RUN = 3  # در هر بار اجرا فقط ۳ خبر جدید ارسال شود تا سقف رایگان پر نشود
+    MAX_PER_RUN = 2
 
     for item in reversed(feed.entries):
         if processed_count >= MAX_PER_RUN:
@@ -139,19 +185,24 @@ def main():
 
         print(f"Processing: {title}")
         try:
+            image_url = extract_image_url(item)
+            if image_url:
+                print(f"Found image: {image_url}")
+
             persian_text = generate_persian_post(title, summary, category)
-            success = send_to_telegram(persian_text)
+            success = send_to_telegram(persian_text, image_url)
             
             if success:
                 print("-> Sent to Telegram successfully!")
                 seen_ids.add(news_id)
                 save_seen_id(news_id)
                 processed_count += 1
-                time.sleep(12)  # وقفه ایمن برای رعایت سقف درخواست
+                time.sleep(10)
             else:
                 print("-> Failed to send to Telegram.")
         except Exception as e:
             print(f"Error calling Gemini: {e}")
+            break
 
 if __name__ == "__main__":
     main()
